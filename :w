@@ -1,0 +1,152 @@
+import torch
+import tqdm
+def compute_log_likelihood_from_list_of_winner_loser_pairs(
+    winner_loser_pairs: list[tuple[int, int]],
+    scores: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Compute the log likelihood of the scores given the winner-loser pairs.
+
+    Args:
+        winner_loser_pairs (list[tuple[int, int]]): List of tuples where each tuple contains a winner and a loser index.
+        scores (torch.Tensor): Tensor containing the scores for each item.
+
+    Returns:
+        torch.Tensor: Log likelihood of the scores given the winner-loser pairs.
+    """
+    log_likelihood = 0.0
+    for winner, loser in winner_loser_pairs:
+        log_likelihood += torch.log(torch.sigmoid(scores[winner] - scores[loser]))
+    return log_likelihood
+
+def maximise_log_likelihood_from_list_of_winner_loser_pairs(
+    winner_loser_pairs: list[tuple[int, int]],
+    scores: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Maximise the log likelihood of the scores given the winner-loser pairs.
+
+    Args:
+        winner_loser_pairs (list[tuple[int, int]]): List of tuples where each tuple contains a winner and a loser index.
+        scores (torch.Tensor): Tensor containing the scores for each item.
+
+    Returns:
+        torch.Tensor: Updated scores after maximising the log likelihood.
+    """
+    # Try to use cuda if available
+    if torch.cuda.is_available():
+        scores = scores.cuda()
+    else:
+        scores = scores.cpu()
+    num_iterations = 10000
+    with tqdm.tqdm(total=num_iterations, desc="Maximising Log Likelihood") as pbar:
+
+        for _ in range(num_iterations):  # Number of iterations for convergence
+            scores.requires_grad = True
+            log_likelihood = compute_log_likelihood_from_list_of_winner_loser_pairs(
+                winner_loser_pairs, scores
+            )
+            pbar.update(1)
+            log_likelihood.backward()
+            pbar.set_postfix({"Gradiant": scores.grad.norm().item(), "Log Likelihood": log_likelihood.item()})
+            with torch.no_grad():
+                scores += 0.001 * scores.grad  # Update scores with a small learning rate
+    
+            scores.grad.zero_()  # Reset gradients for the next iteration 
+            pbar.set_postfix({"Gradiant": scores.grad.norm().item(), "Log Likelihood": log_likelihood.item()})
+    return scores
+
+def compute_hessian_from_winner_loser_pairs_and_scores(winner_loser_pairs: list[tuple[int, int]], scores: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the Hessian matrix from the winner-loser pairs and scores.
+
+    Args:
+        winner_loser_pairs (list[tuple[int, int]]): List of tuples where each tuple contains a winner and a loser index.
+        scores (torch.Tensor): Tensor containing the scores for each item.
+
+    Returns:
+        torch.Tensor: Hessian matrix computed from the winner-loser pairs and scores.
+    """
+    hessian = torch.zeros((len(scores), len(scores)), dtype=scores.dtype, device=scores.device)
+    for winner, loser in winner_loser_pairs:
+        diff = scores[winner] - scores[loser]
+        prob = torch.sigmoid(diff)
+        #hessian is a matrix containing double differentials
+        #you have to differentiate twice
+        dd = prob * (1 - prob) * (1 - 2 * prob)
+        hessian[winner, winner] += dd
+        hessian[loser, loser] += dd
+        hessian[winner, loser] -= dd
+        hessian[loser, winner] -= dd
+    
+    return hessian
+
+
+def compute_ranking_from_scores(scores: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the ranking from the scores.
+
+    Args:
+        scores (torch.Tensor): Tensor containing the scores for each item.
+
+    Returns:
+        torch.Tensor: Indices of the items sorted by their scores in descending order.
+    """
+    return torch.argsort(scores, descending=True)
+
+def generate_normal_points_from_mean_and_covariance(mean: torch.Tensor, covariance: torch.Tensor, num_points: int) -> torch.Tensor:
+    """
+    Generate points from a multivariate normal distribution given mean and covariance.
+
+    Args:
+        mean (torch.Tensor): Mean of the distribution.
+        covariance (torch.Tensor): Covariance matrix of the distribution.
+        num_points (int): Number of points to generate.
+
+    Returns:
+        torch.Tensor: Generated points from the multivariate normal distribution.
+    """
+    return torch.distributions.MultivariateNormal(mean, covariance).sample((num_points,))
+
+def test():
+    # Example usage
+    # generate some random scores
+    test_scores = torch.tensor([2.0,3.0, 4.0, 5.0], dtype=torch.float32)
+    print("Target Scores:", test_scores)
+    winner_loser_pairs = []
+    #generate winning and losing pairs from scores
+    for i in range(1000):
+        p1 = torch.randint(0, len(test_scores), (1,)).item()
+        p2 = torch.randint(0, len(test_scores), (1,)).item()
+        if p1 == p2:
+            continue
+        prob = torch.sigmoid(test_scores[p1] - test_scores[p2])
+        winner = p1 if torch.rand(1).item() < prob else p2
+        loser = p2 if winner == p1 else p1
+        winner_loser_pairs.append((winner, loser))
+
+    print("Winner-Loser Pairs:", winner_loser_pairs[:10])  # Show first 10 pairs for brevity
+    scores = torch.tensor([0.5, 0.5, 0.5, 0.5], dtype=torch.float32)
+
+    updated_scores = maximise_log_likelihood_from_list_of_winner_loser_pairs(
+        winner_loser_pairs, scores
+    )
+    print("Updated Scores - Test Scores (Should be nearly constant):", updated_scores-test_scores)
+    log_likelihood = compute_log_likelihood_from_list_of_winner_loser_pairs(
+        winner_loser_pairs, scores
+    )
+    print("Log Likelihood:", log_likelihood.item())
+
+
+
+    ranking = compute_ranking_from_scores(updated_scores)
+    print("Ranking:", ranking)
+
+    hessian = compute_hessian_from_winner_loser_pairs_and_scores(
+        winner_loser_pairs, updated_scores
+    )
+    print("Hessian:", hessian)
+
+if __name__ == "__main__":
+    test()
+# This code is a self-contained module that computes rankings from pairwise comparisons.
