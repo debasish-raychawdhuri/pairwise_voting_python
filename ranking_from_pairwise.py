@@ -39,22 +39,23 @@ def maximise_log_likelihood_from_list_of_winner_loser_pairs(
     else:
         scores = scores.cpu()
     num_iterations = 5000
+    optimizer = torch.optim.Adam([scores], lr=0.01)  # Using Adam optimizer for better convergence
     #torch.optim.LBFGS(scores, lr=0.1)  # Using LBFGS optimizer for better convergence
     with tqdm.tqdm(total=num_iterations, desc="Maximising Log Likelihood") as pbar:
 
         for _ in range(num_iterations):  # Number of iterations for convergence
             scores.requires_grad = True
-            log_likelihood = compute_log_likelihood_from_list_of_winner_loser_pairs(
+        
+            neg_log_likelihood = -compute_log_likelihood_from_list_of_winner_loser_pairs(
                 winner_loser_pairs, scores
             )
             pbar.update(1)
-            log_likelihood.backward()
+            neg_log_likelihood.backward()
+            optimizer.step()  # Update scores using the optimizer
             with torch.no_grad():
                 # Update scores using the gradient
-                scores += 0.002 * scores.grad  # Update scores with a small learning rate
-                pbar.set_postfix({"Gradiant": scores.grad.norm().item(), "Log Likelihood": log_likelihood.item()})
-    
-            scores.grad.zero_()  # Reset gradients for the next iteration 
+                pbar.set_postfix({"Gradiant": scores.grad.norm().item(), "Negative Log Likelihood": neg_log_likelihood.item()})
+            optimizer.zero_grad()  # Zero the gradients for the next iteration 
     return scores
 
 def compute_hessian_from_winner_loser_pairs_and_scores(winner_loser_pairs: list[tuple[int, int]], scores: torch.Tensor) -> torch.Tensor:
@@ -140,9 +141,8 @@ def generate_normal_points_from_mean_and_covariance(mean: torch.Tensor, covarian
 def probability_of_first_n_in_first_m_calculated_from_scores_and_winner_loser_pairs( scores: torch.Tensor, winner_loser_pairs: list[tuple[int,int]], n: int, m: int) -> float:
     hessian = compute_hessian_from_winner_loser_pairs_and_scores(winner_loser_pairs, scores)
     covariance = -torch.linalg.inv(hessian)
-    print("Covariance Matrix:", covariance)
     mean = scores[1:]  # Exclude the first score, which is assumed to be a constant or baseline score. This is important because the substracting a constant from every score does not change the likelihood. 
-    points = generate_normal_points_from_mean_and_covariance(mean, covariance, 1000)
+    points = generate_normal_points_from_mean_and_covariance(mean, covariance, 1000).detach().clone()
     #We had removed the first element from the scores, so we need to add it back to the points
     print("Generated Points Shape:", points.shape)
     original_ranking = compute_ranking_from_scores(scores)
@@ -162,12 +162,12 @@ def probability_of_first_n_in_first_m_calculated_from_scores_and_winner_loser_pa
 def test():
     # Example usage
     # generate some random scores
-    test_scores = torch.tensor(range(20), dtype=torch.float64)
+    test_scores = torch.tensor(range(50), dtype=torch.float64)
     test_scores = test_scores * 0.2  # Random scores around 50
     print("Target Scores:", test_scores)
     winner_loser_pairs = []
     #generate winning and losing pairs from scores
-    for i in range(200):
+    for i in range(2000):
         p1 = torch.randint(0, len(test_scores), (1,)).item()
         p2 = torch.randint(0, len(test_scores), (1,)).item()
         if p1 == p2:
@@ -178,12 +178,12 @@ def test():
         winner_loser_pairs.append((winner, loser))
 
     print("Winner-Loser Pairs:", winner_loser_pairs[:10])  # Show first 10 pairs for brevity
-    scores = torch.zeros(20, dtype=torch.float64)
+    scores = torch.zeros(50, dtype=torch.float64)
 
     updated_scores = maximise_log_likelihood_from_list_of_winner_loser_pairs(
         winner_loser_pairs, scores
-    )
-    print("Updated Scores - Test Scores (Should be nearly constant):", updated_scores-test_scores)
+    ).detach().clone()
+    # print("Updated Scores - Test Scores (Should be nearly constant):", updated_scores-test_scores)
     log_likelihood = compute_log_likelihood_from_list_of_winner_loser_pairs(
         winner_loser_pairs, scores
     )
