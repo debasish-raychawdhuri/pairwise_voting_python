@@ -1,5 +1,7 @@
 import torch
 import tqdm
+
+
 def compute_log_likelihood_from_list_of_winner_loser_pairs(
     winner_loser_pairs: list[tuple[int, int]],
     scores: torch.Tensor,
@@ -16,8 +18,10 @@ def compute_log_likelihood_from_list_of_winner_loser_pairs(
     """
     log_likelihood = 0.0
     for winner, loser in winner_loser_pairs:
-        log_likelihood += torch.log(torch.sigmoid(scores[winner] - scores[loser]))
+        log_likelihood += torch.log(
+            torch.sigmoid(scores[winner] - scores[loser]))
     return log_likelihood
+
 
 def maximise_log_likelihood_from_list_of_winner_loser_pairs(
     winner_loser_pairs: list[tuple[int, int]],
@@ -38,14 +42,15 @@ def maximise_log_likelihood_from_list_of_winner_loser_pairs(
         scores = scores.cuda()
     else:
         scores = scores.cpu()
-    num_iterations = 1000
+    num_iterations = 4000
     scores.requires_grad = True
-    optimizer = torch.optim.SGD([scores], lr=0.05)  # Using Adam optimizer for better convergence
-    #torch.optim.LBFGS(scores, lr=0.1)  # Using LBFGS optimizer for better convergence
+    # Using Adam optimizer for better convergence
+    optimizer = torch.optim.SGD([scores], lr=0.05)
+    # torch.optim.LBFGS(scores, lr=0.1)  # Using LBFGS optimizer for better convergence
     with tqdm.tqdm(total=num_iterations, desc="Maximising Log Likelihood") as pbar:
 
         for _ in range(num_iterations):  # Number of iterations for convergence
-        
+
             neg_log_likelihood = -compute_log_likelihood_from_list_of_winner_loser_pairs(
                 winner_loser_pairs, scores
             )
@@ -54,9 +59,14 @@ def maximise_log_likelihood_from_list_of_winner_loser_pairs(
             optimizer.step()  # Update scores using the optimizer
             with torch.no_grad():
                 # Update scores using the gradient
-                pbar.set_postfix({"Gradiant": scores.grad.norm().item(), "Negative Log Likelihood": neg_log_likelihood.item()})
-            optimizer.zero_grad()  # Zero the gradients for the next iteration 
+                pbar.set_postfix({"Gradiant": scores.grad.norm().item(
+                ), "Negative Log Likelihood": neg_log_likelihood.item()})
+                if scores.grad.norm().item() < 1e-7:
+                    break
+
+            optimizer.zero_grad()  # Zero the gradients for the next iteration
     return scores
+
 
 def compute_hessian_from_winner_loser_pairs_and_scores(winner_loser_pairs: list[tuple[int, int]], scores: torch.Tensor) -> torch.Tensor:
     """
@@ -69,8 +79,9 @@ def compute_hessian_from_winner_loser_pairs_and_scores(winner_loser_pairs: list[
     Returns:
         torch.Tensor: Hessian matrix computed from the winner-loser pairs and scores.
     """
-    
-    hessian = torch.zeros((len(scores), len(scores)), dtype=scores.dtype, device=scores.device)
+
+    hessian = torch.zeros((len(scores), len(scores)),
+                          dtype=scores.dtype, device=scores.device)
     for winner, loser in winner_loser_pairs:
         diff = scores[winner] - scores[loser]
         prob = torch.sigmoid(diff)
@@ -79,7 +90,7 @@ def compute_hessian_from_winner_loser_pairs_and_scores(winner_loser_pairs: list[
             for i in range(1, len(scores)):
                 for j in range(i, len(scores)):
                     if i == winner and j == winner:
-                        hessian[i,j] += 4*dd
+                        hessian[i, j] += 4*dd
                     elif i == winner or j == winner:
                         hessian[i, j] += 2*dd
                         hessian[j, i] += 2*dd
@@ -91,7 +102,7 @@ def compute_hessian_from_winner_loser_pairs_and_scores(winner_loser_pairs: list[
             for i in range(1, len(scores)):
                 for j in range(i, len(scores)):
                     if i == loser and j == loser:
-                        hessian[i,j] += 4*dd
+                        hessian[i, j] += 4*dd
                     elif i == loser or j == loser:
                         hessian[i, j] += 2*dd
                         hessian[j, i] += 2*dd
@@ -99,7 +110,6 @@ def compute_hessian_from_winner_loser_pairs_and_scores(winner_loser_pairs: list[
                         hessian[i, j] += dd
                         if i != j:
                             hessian[j, i] += dd
-
 
         else:
             hessian[winner, winner] += dd
@@ -123,6 +133,7 @@ def compute_ranking_from_scores(scores: torch.Tensor) -> torch.Tensor:
     """
     return torch.argsort(scores, descending=True)
 
+
 def generate_normal_points_from_mean_and_covariance(mean: torch.Tensor, covariance: torch.Tensor, num_points: int) -> torch.Tensor:
     """
     Generate points from a multivariate normal distribution given mean and covariance.
@@ -136,38 +147,47 @@ def generate_normal_points_from_mean_and_covariance(mean: torch.Tensor, covarian
         torch.Tensor: Generated points from the multivariate normal distribution.
     """
     return torch.distributions.MultivariateNormal(mean, covariance).sample((num_points,))
-def probability_of_first_n_in_first_m_calculated_from_scores_and_winner_loser_pairs( scores: torch.Tensor, winner_loser_pairs: list[tuple[int,int]], n: int, m: int) -> float:
-    hessian = compute_hessian_from_winner_loser_pairs_and_scores(winner_loser_pairs, scores)
+
+
+def probability_of_first_n_in_first_m_calculated_from_scores_and_winner_loser_pairs(scores: torch.Tensor, winner_loser_pairs: list[tuple[int, int]], n: int, m: int) -> float:
+    hessian = compute_hessian_from_winner_loser_pairs_and_scores(
+        winner_loser_pairs, scores)
     print("Hessian:", hessian)
     covariance = -torch.linalg.inv(hessian)
-    mean = scores[1:]  # Exclude the first score, which is assumed to be a constant or baseline score. This is important because the substracting a constant from every score does not change the likelihood. 
-    points = generate_normal_points_from_mean_and_covariance(mean, covariance, 1000).detach().clone()
-    #We had removed the first element from the scores, so we need to add it back to the points
+    # Exclude the first score, which is assumed to be a constant or baseline score. This is important because the substracting a constant from every score does not change the likelihood.
+    mean = scores[1:]
+    points = generate_normal_points_from_mean_and_covariance(
+        mean, covariance, 10000).detach().clone()
+    # We had removed the first element from the scores, so we need to add it back to the points
     print("Generated Points Shape:", points.shape)
     original_ranking = compute_ranking_from_scores(scores)
     # Calculate the probabilities of the first n points being in the first m points
-    
+
     first_n_indices = original_ranking[:n]
     matching = 0
-    first_score = scores.detach().clone()[0].unsqueeze(0)  # Get the first score
+    first_score = scores.detach().clone()[0].unsqueeze(
+        0)  # Get the first score
     for point in points:
         first_score = -torch.sum(point)
-        point = torch.cat([torch.tensor([first_score],dtype=torch.float64, device=scores.device), point])  # Add the first score back
+        point = torch.cat([torch.tensor([first_score], dtype=torch.float64,
+                          device=scores.device), point])  # Add the first score back
         point_ranking = compute_ranking_from_scores(point)
         first_m_indices = point_ranking[:m]
         if all(idx in first_m_indices for idx in first_n_indices):
             matching += 1
     return matching / len(points)
 
+
 def test():
     # Example usage
     # generate some random scores
-    test_scores = torch.tensor(range(10), dtype=torch.float64)
+    number_of_items = 40
+    test_scores = torch.tensor(range(number_of_items), dtype=torch.float64)
     test_scores = test_scores * 0.2  # Random scores around 50
     print("Target Scores:", test_scores)
     winner_loser_pairs = []
-    #generate winning and losing pairs from scores
-    for i in range(100):
+    # generate winning and losing pairs from scores
+    for i in range(500):
         p1 = torch.randint(0, len(test_scores), (1,)).item()
         p2 = torch.randint(0, len(test_scores), (1,)).item()
         if p1 == p2:
@@ -177,28 +197,32 @@ def test():
         loser = p2 if winner == p1 else p1
         winner_loser_pairs.append((winner, loser))
 
-    print("Winner-Loser Pairs:", winner_loser_pairs[:10])  # Show first 10 pairs for brevity
-    scores = torch.zeros(10, dtype=torch.float64)
+    # Show first 10 pairs for brevity
+    print("Winner-Loser Pairs:", winner_loser_pairs[:10])
+    scores = torch.zeros(number_of_items, dtype=torch.float64)
 
     updated_scores = maximise_log_likelihood_from_list_of_winner_loser_pairs(
         winner_loser_pairs, scores
     ).detach().clone()
+    print("Sum of Updated Scores:", torch.sum(updated_scores).item())
     # print("Updated Scores - Test Scores (Should be nearly constant):", updated_scores-test_scores)
     log_likelihood = compute_log_likelihood_from_list_of_winner_loser_pairs(
         winner_loser_pairs, updated_scores
     )
     print("Log Likelihood:", log_likelihood.item())
 
-
-
     ranking = compute_ranking_from_scores(updated_scores)
     print("Ranking:", ranking)
-    
+
+    filter_size = 7
+    ranking_size = 3
     # Probability of first 3 in first 5 calculated from scores and winner-loser pairs
     probability = probability_of_first_n_in_first_m_calculated_from_scores_and_winner_loser_pairs(
-        updated_scores, winner_loser_pairs, 3, 5
+        updated_scores, winner_loser_pairs, ranking_size, filter_size
     )
-    print("Probability of first 3 in first 5:", probability)
+    print(
+        f"Probability of first {ranking_size} in first {filter_size}:", probability)
+
 
 if __name__ == "__main__":
     test()
